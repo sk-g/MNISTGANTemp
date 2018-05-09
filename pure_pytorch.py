@@ -1,6 +1,7 @@
 from __future__ import print_function
 import argparse
 import os
+import sys
 import tqdm
 import random
 import torch
@@ -13,18 +14,25 @@ import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
 
-# opt.netD = discimnator model path
 
-path_netD = os.getcwd()+os.sep+'models'+os.sep+'pytorch'+os.sep+'netD'
-path_netG = os.getcwd()+os.sep+'models'+os.sep+'pytorch'
+# add functionality to load models later
+# path_netD = os.getcwd()+os.sep+'models'+os.sep+'pytorch'+os.sep+'netD'
+# path_netG = os.getcwd()+os.sep+'models'+os.sep+'pytorch'
 
-manualSeed = 14
+
+### setting up some constants
+manualSeed = 77
 random.seed(manualSeed)
 torch.manual_seed(manualSeed)
 cudnn.benchmark = True
 imageSize = 64
-niter = 30
-beta1 = 0.9
+niter = 100
+beta1 = 0.6
+ngpu = 1
+nz = 100 # latent space dims
+ngf = 32
+ndf = 32
+nc = 1 #number of channels = 1 for MNIST
 
 if torch.cuda.is_available():
     cuda = True
@@ -32,7 +40,10 @@ if torch.cuda.is_available():
 else:
     cuda = False
     print("Not using cuda")
+device = torch.device("cuda:0" if cuda else "cpu")
 
+
+### loading the data
 dataset = dset.MNIST(root='data', download=True,
                        transform=transforms.Compose([
                            transforms.Resize(imageSize),
@@ -42,23 +53,27 @@ dataset = dset.MNIST(root='data', download=True,
 dataloader = torch.utils.data.DataLoader(dataset, batch_size= 64,
                                          shuffle=True, num_workers = 2)
 
-device = torch.device("cuda:0" if cuda else "cpu")
-ngpu = 1
-nz = 128 # latent space dims
-ngf = 64
-ndf = 64
-nc = 1 #number of channels = 1 for MNIST
-
 
 # custom weights initialization called on netG and netD
 def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:
-        m.weight.data.normal_(0.0, 0.02)
+        m.weight.data.normal_(0.0001, 0.02)
     elif classname.find('BatchNorm') != -1:
         m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.fill_(0)
+        m.bias.data.fill_(0.001)
 
+def drawProgressBar(percent, barLen = 50):
+
+    sys.stdout.write("\r")
+    progress = ""
+    for i in range(barLen):
+        if i < int(barLen * percent):
+            progress += "="
+        else:
+            progress += " "
+    sys.stdout.write("[ %s ] %.2f%%" % (progress, percent * 100))
+    sys.stdout.flush()
 
 class Generator(nn.Module):
     def __init__(self, ngpu):
@@ -144,15 +159,17 @@ netD.apply(weights_init)
 
 criterion = nn.BCELoss()
 
-fixed_noise = torch.randn(64, nz, 1, 1, device=device)
+fixed_noise = torch.randn(128, nz, 1, 1, device=device)#64
 real_label = 1
 fake_label = 0
 
 # setup optimizer
-optimizerD = optim.Adam(netD.parameters(), lr = 0.009, betas=(beta1, 0.999))
-optimizerG = optim.Adam(netG.parameters(), lr = 0.01, betas=(beta1, 0.999))
+optimizerD = optim.Adam(netD.parameters(), lr = 0.001, betas=(beta1, 0.999))
+optimizerG = optim.Adam(netG.parameters(), lr = 0.001, betas=(beta1, 0.999))
 
-for epoch in tqdm.tqdm(range(1,niter+1)):
+for epoch in range(1,niter+1):
+    counter = 0
+    print("\nEpoch[{}/{}]:\n".format(epoch,niter))
     for i, data in enumerate(dataloader, 0):
         ############################
         # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
@@ -190,14 +207,20 @@ for epoch in tqdm.tqdm(range(1,niter+1)):
         D_G_z2 = output.mean().item()
         optimizerG.step()
 
+        drawProgressBar((counter+1)/len(dataloader))
+        counter += 1
         if i % 100 == 0:
-            vutils.save_image(real_cpu,'results'+os.sep+'pytorch'+'real_samples.png',normalize=True)
+            vutils.save_image(real_cpu,'results'+os.sep+'pytorch'+os.sep+'real_samples.png',normalize=True)
             fake = netG(fixed_noise)
             vutils.save_image(fake.detach(),'results'+os.sep+'pytorch'+os.sep+'fake_samples_epoch_{}.png'.format(epoch),normalize=True)
-    print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
-          % (epoch, niter, i, len(dataloader),
-             errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
+    print('\n[{}/{}] Loss_D: {:.4f} Loss_G: {:.4f} D(x): {:.4f} D(G(z)): {:.4f} / {:.4f}'.format(epoch,
+        niter,
+        errD.item(),
+        errG.item(),
+        D_x,
+        D_G_z1,
+        D_G_z2))
 
-    # do checkpointing
-    torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % ('results'+os.sep+'pytorch', epoch))
-    torch.save(netD.state_dict(), '%s/netD_epoch_%d.pth' % ('results'+os.sep+'pytorch', epoch))
+#do checkpointing
+torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % ('results'+os.sep+'pytorch', epoch))
+torch.save(netD.state_dict(), '%s/netD_epoch_%d.pth' % ('results'+os.sep+'pytorch', epoch))
